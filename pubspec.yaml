@@ -1,7 +1,7 @@
 name: flutter_usb_event
 description: "Flutter plugin that allows you to listen to USB device connection and disconnection events"
 version: 1.0.0
-homepage:
+homepage: https://github.com/Donzo24/flutter_usb_event
 
 environment:
   sdk: '>=3.4.1 <4.0.0'
