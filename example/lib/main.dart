@@ -16,7 +16,7 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-    String? readerStatus;
+    String? _usbStatus;
 
     @override
     void initState() {
@@ -33,27 +33,27 @@ class _MyAppState extends State<MyApp> {
     // Platform messages are asynchronous, so we initialize in an async method.
     Future<void> initPlatformState() async {
         FlutterUsbEvent.startListening(
-            onDeviceConnected: (message) {
-                setState(() {
-                    if(message.contains("ACR122U")) {
-                        print(message);
-                        readerStatus = message;
-                    } else {
-                        readerStatus = null;
-                    }
-                    
-                });
+            onDeviceConnected: (deviceName) {
+                if (deviceName.contains('ACR122U')) {
+                    setState(() {
+                        _usbStatus = 'ACR122U device connected: $deviceName';
+                    });
+                } else {
+                    setState(() {
+                        _usbStatus = 'Other device connected: $deviceName';
+                    });
+                }
             },
-            onDeviceDisconnected: (message) {
-                setState(() {
-                    if(message.contains("ACR122U")) {
-                        print(message);
-                        readerStatus = message;
-                    } else {
-                        readerStatus = null;
-                    }
-                    
-                });
+            onDeviceDisconnected: (deviceName) {
+                if (deviceName.contains('ACR122U')) {
+                    setState(() {
+                        _usbStatus = 'ACR122U device disconnected: $deviceName';
+                    });
+                } else {
+                    setState(() {
+                        _usbStatus = 'Other device disconnected: $deviceName';
+                    });
+                }
             },
         );
     }
@@ -66,7 +66,7 @@ class _MyAppState extends State<MyApp> {
                     title: const Text('RFID Reader Event Listener'),
                 ),
                 body: Center(
-                    child: Text(readerStatus ?? 'Aucun lecteur détecté ou connecté.'),
+                    child: Text(_usbStatus ?? 'No USB device detected.'),
                 ),
             ),
         );
