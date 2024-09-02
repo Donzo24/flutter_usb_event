@@ -34,6 +34,7 @@ class _MyAppState extends State<MyApp> {
     Future<void> initPlatformState() async {
         FlutterUsbEvent.startListening(
             onDeviceConnected: (deviceName) {
+                print(deviceName);
                 if (deviceName.contains('ACR122U')) {
                     setState(() {
                         _usbStatus = 'ACR122U device connected: $deviceName';

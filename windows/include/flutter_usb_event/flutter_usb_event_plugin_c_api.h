@@ -9,14 +9,14 @@
 #define FLUTTER_PLUGIN_EXPORT __declspec(dllimport)
 #endif
 
-#if defined(__cplusplus)
+#ifdef __cplusplus
 extern "C" {
 #endif
 
 FLUTTER_PLUGIN_EXPORT void FlutterUsbEventPluginCApiRegisterWithRegistrar(
     FlutterDesktopPluginRegistrarRef registrar);
 
-#if defined(__cplusplus)
+#ifdef __cplusplus
 }  // extern "C"
 #endif
 
