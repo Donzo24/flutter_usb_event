@@ -1,4 +1,4 @@
-## [1.0.1] - 2025-04-16
+## [1.0.2] - 2025-04-16
 
 ### Added
 - Added a banner image (`flutter_usb_event_banner.png`) to enhance the visual presentation of the README.
