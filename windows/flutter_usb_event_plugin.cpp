@@ -1,227 +1,213 @@
-
-
-// // This must be included before many other Windows headers.
-// #include <windows.h>
-
-// // For getPlatformVersion; remove unless needed for your plugin implementation.
-// #include <VersionHelpers.h>
-
-// #include <flutter/method_channel.h>
-// #include <flutter/plugin_registrar_windows.h>
-// #include <flutter/standard_method_codec.h>
-
-// #include <memory>
-// #include <sstream>
-
-// namespace flutter_usb_event {
-
-// // static
-// void FlutterUsbEventPlugin::RegisterWithRegistrar(
-//     flutter::PluginRegistrarWindows *registrar) {
-//   auto channel =
-//       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-//           registrar->messenger(), "flutter_usb_event",
-//           &flutter::StandardMethodCodec::GetInstance());
-
-//   auto plugin = std::make_unique<FlutterUsbEventPlugin>();
-
-//   channel->SetMethodCallHandler(
-//       [plugin_pointer = plugin.get()](const auto &call, auto result) {
-//         plugin_pointer->HandleMethodCall(call, std::move(result));
-//       });
-
-//   registrar->AddPlugin(std::move(plugin));
-// }
-
-// FlutterUsbEventPlugin::FlutterUsbEventPlugin() {}
-
-// FlutterUsbEventPlugin::~FlutterUsbEventPlugin() {}
-
-// void FlutterUsbEventPlugin::HandleMethodCall(
-//     const flutter::MethodCall<flutter::EncodableValue> &method_call,
-//     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-//   if (method_call.method_name().compare("getPlatformVersion") == 0) {
-//     std::ostringstream version_stream;
-//     version_stream << "Windows ";
-//     if (IsWindows10OrGreater()) {
-//       version_stream << "10+";
-//     } else if (IsWindows8OrGreater()) {
-//       version_stream << "8";
-//     } else if (IsWindows7OrGreater()) {
-//       version_stream << "7";
-//     }
-//     result->Success(flutter::EncodableValue(version_stream.str()));
-//   } else {
-//     result->NotImplemented();
-//   }
-// }
-
-// }  // namespace flutter_usb_event
-
 #include "flutter_usb_event_plugin.h"
 
 #include <flutter/method_channel.h>
 #include <flutter/plugin_registrar_windows.h>
+#include <flutter/standard_method_codec.h>
 #include <windows.h>
 #include <dbt.h>
-#include <SetupAPI.h>
-#include <string>
-#include <iostream>
-
+#include <initguid.h>
+#include <usbioctl.h>
+#include <setupapi.h>
+#include <winusb.h>
 #include <memory>
 #include <sstream>
+#include <vector>
+#include <iostream>
 
-namespace {
+#pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "winusb.lib")
 
-class FlutterUsbEventPlugin : public flutter::Plugin {
-public:
-    static void RegisterWithRegistrar(flutter::PluginRegistrarWindows* registrar);
+// Helper function to convert wide strings to UTF-8 strings
+std::string ConvertWStringToString(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
 
-    FlutterUsbEventPlugin(flutter::PluginRegistrarWindows* registrar);
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
 
-    virtual ~FlutterUsbEventPlugin();
+    return strTo;
+}
 
-private:
-    // Method to handle method calls from Dart.
-    void HandleMethodCall(const flutter::MethodCall<std::string>& method_call,
-                          std::unique_ptr<flutter::MethodResult<std::string>> result);
+// Function to open the USB device
+HANDLE OpenUsbDevice(const std::string& devicePath) {
+    std::wstring devicePathW(devicePath.begin(), devicePath.end());
+    
+    HANDLE deviceHandle = CreateFileW(
+        devicePathW.c_str(),
+        GENERIC_WRITE | GENERIC_READ,
+        FILE_SHARE_WRITE | FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+        NULL);
 
-    // Window procedure to handle Windows messages.
-    static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    if (deviceHandle == INVALID_HANDLE_VALUE) {
+        std::cerr << "Error: Unable to open device handle. Error code: " << GetLastError() << std::endl;
+        return nullptr;
+    }
 
-    // Hidden window identifier for device notifications.
-    HWND hwnd_;
-    flutter::PluginRegistrarWindows* registrar_;
-};
+    return deviceHandle;
+}
 
-// Register the plugin with the registrar.
+// Function to initialize WinUSB
+bool InitializeWinUsb(HANDLE deviceHandle, WINUSB_INTERFACE_HANDLE &usbHandle) {
+    if (!WinUsb_Initialize(deviceHandle, &usbHandle)) {
+        std::cerr << "Error: WinUSB initialization failed. Error code: " << GetLastError() << std::endl;
+        return false;
+    }
+    return true;
+}
+
+// Function to return device path only
+std::string GetDevicePathUsingWinUsb(const std::string& device_path) {
+    // Convert device path to WCHAR (wide character string) for CreateFileW
+    std::wstring device_path_w(device_path.begin(), device_path.end());
+
+    HANDLE deviceHandle = CreateFileW(
+        device_path_w.c_str(),
+        GENERIC_WRITE | GENERIC_READ,
+        FILE_SHARE_WRITE | FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+        NULL);
+
+    if (deviceHandle == INVALID_HANDLE_VALUE) {
+        std::cerr << "Error: Unable to open device handle. Error code: " << GetLastError() << std::endl;
+        return "Error opening device handle";
+    }
+
+    WINUSB_INTERFACE_HANDLE usbHandle;
+    if (!WinUsb_Initialize(deviceHandle, &usbHandle)) {
+        std::cerr << "Error: WinUSB initialization failed. Error code: " << GetLastError() << std::endl;
+        CloseHandle(deviceHandle);
+        return "WinUSB initialization failed";
+    }
+
+    WinUsb_Free(usbHandle);
+    CloseHandle(deviceHandle);
+
+    return device_path;
+}
+
+// Function to check if the device is a USB device based on its path
+bool IsUsbDevice(const std::string& device_path) {
+    // Check if the device path contains "USB#VID" which is typical for USB devices
+    return device_path.find("USB#VID") != std::string::npos;
+}
+
+namespace flutter_usb_event {
+
+// Static method to register the plugin with the registrar
 void FlutterUsbEventPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
-    auto plugin = std::make_unique<FlutterUsbEventPlugin>(registrar);
-    registrar->AddPlugin(std::move(plugin));
+  auto plugin = std::make_unique<FlutterUsbEventPlugin>(registrar);
+  registrar->AddPlugin(std::move(plugin));
 }
 
 FlutterUsbEventPlugin::FlutterUsbEventPlugin(
     flutter::PluginRegistrarWindows* registrar)
     : registrar_(registrar), hwnd_(nullptr) {
-    const std::wstring window_class_name = L"USB_DEVICE_LISTENER";
+  const std::wstring window_class_name = L"USB_DEVICE_LISTENER";
 
-    WNDCLASS window_class = {};
-    window_class.lpfnWndProc = WindowProc;
-    window_class.hInstance = GetModuleHandle(nullptr);
-    window_class.lpszClassName = window_class_name.c_str();
-    RegisterClass(&window_class);
+  WNDCLASS window_class = {};
+  window_class.lpfnWndProc = WindowProc;
+  window_class.hInstance = GetModuleHandle(nullptr);
+  window_class.lpszClassName = window_class_name.c_str();
+  RegisterClass(&window_class);
 
-    hwnd_ = CreateWindow(window_class_name.c_str(), L"", 0, 0, 0, 0, 0, nullptr,
-                         nullptr, GetModuleHandle(nullptr), this);
+  hwnd_ = CreateWindow(window_class_name.c_str(), L"", 0, 0, 0, 0, 0, nullptr,
+                       nullptr, GetModuleHandle(nullptr), this);
 
-    // Request device notifications.
-    DEV_BROADCAST_DEVICEINTERFACE NotificationFilter;
-    ZeroMemory(&NotificationFilter, sizeof(NotificationFilter));
-    NotificationFilter.dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
-    NotificationFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+  channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      registrar_->messenger(), "flutter_usb_event",
+      &flutter::StandardMethodCodec::GetInstance());
 
-    RegisterDeviceNotification(hwnd_, &NotificationFilter,
-                               DEVICE_NOTIFY_WINDOW_HANDLE);
+  channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        HandleMethodCall(call, std::move(result));
+      });
+
+  // Set up device notification filter for all USB devices
+  DEV_BROADCAST_DEVICEINTERFACE NotificationFilter;
+  ZeroMemory(&NotificationFilter, sizeof(NotificationFilter));
+  NotificationFilter.dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
+  NotificationFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+  NotificationFilter.dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;  // For USB devices
+
+  RegisterDeviceNotification(hwnd_, &NotificationFilter,
+                             DEVICE_NOTIFY_WINDOW_HANDLE);
 }
 
 FlutterUsbEventPlugin::~FlutterUsbEventPlugin() {
-    if (hwnd_) {
-        DestroyWindow(hwnd_);
-    }
+  if (hwnd_) {
+    DestroyWindow(hwnd_);
+  }
 }
 
 void FlutterUsbEventPlugin::HandleMethodCall(
-    const flutter::MethodCall<std::string>& method_call,
-    std::unique_ptr<flutter::MethodResult<std::string>> result) {
-    if (method_call.method_name().compare("startListening") == 0) {
-        // Start listening, already configured in constructor.
-        result->Success();
-    } else if (method_call.method_name().compare("stopListening") == 0) {
-        // Stop listening, no specific removal needed in this implementation.
-        result->Success();
-    } else {
-        result->NotImplemented();
-    }
+    const flutter::MethodCall<flutter::EncodableValue>& method_call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  if (method_call.method_name().compare("startListening") == 0) {
+    result->Success();
+  } else if (method_call.method_name().compare("stopListening") == 0) {
+    result->Success();
+  } else {
+    result->NotImplemented();
+  }
 }
 
-// Function to get the device name.
-std::string GetDeviceName(LPARAM lParam) {
-    PDEV_BROADCAST_DEVICEINTERFACE deviceInterface = reinterpret_cast<PDEV_BROADCAST_DEVICEINTERFACE>(lParam);
-    HDEVINFO deviceInfo = SetupDiGetClassDevs(&deviceInterface->dbcc_classguid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-
-    if (deviceInfo == INVALID_HANDLE_VALUE) {
-        return "Unknown device";
-    }
-
-    SP_DEVICE_INTERFACE_DATA deviceInterfaceData;
-    deviceInterfaceData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
-    
-    if (!SetupDiEnumDeviceInterfaces(deviceInfo, NULL, &deviceInterface->dbcc_classguid, 0, &deviceInterfaceData)) {
-        SetupDiDestroyDeviceInfoList(deviceInfo);
-        return "Unknown device";
-    }
-
-    DWORD requiredSize = 0;
-    SetupDiGetDeviceInterfaceDetail(deviceInfo, &deviceInterfaceData, NULL, 0, &requiredSize, NULL);
-    PSP_DEVICE_INTERFACE_DETAIL_DATA deviceDetail = (PSP_DEVICE_INTERFACE_DETAIL_DATA)malloc(requiredSize);
-    deviceDetail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA);
-
-    SP_DEVINFO_DATA devInfoData;
-    devInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
-
-    if (!SetupDiGetDeviceInterfaceDetail(deviceInfo, &deviceInterfaceData, deviceDetail, requiredSize, NULL, &devInfoData)) {
-        free(deviceDetail);
-        SetupDiDestroyDeviceInfoList(deviceInfo);
-        return "Unknown device";
-    }
-
-    CHAR deviceName[256];
-    if (SetupDiGetDeviceRegistryProperty(deviceInfo, &devInfoData, SPDRP_DEVICEDESC, NULL, (PBYTE)deviceName, sizeof(deviceName), NULL)) {
-        std::string name(deviceName);
-        free(deviceDetail);
-        SetupDiDestroyDeviceInfoList(deviceInfo);
-        return name;
-    }
-
-    free(deviceDetail);
-    SetupDiDestroyDeviceInfoList(deviceInfo);
-    return "Unknown device";
-}
-
+// Static method for handling Windows messages
 LRESULT CALLBACK FlutterUsbEventPlugin::WindowProc(HWND hwnd, UINT uMsg,
                                                    WPARAM wParam, LPARAM lParam) {
-    if (uMsg == WM_CREATE) {
-        // Associate the window with the plugin instance.
-        SetWindowLongPtr(hwnd, GWLP_USERDATA,
-                         reinterpret_cast<LONG_PTR>(
-                             reinterpret_cast<CREATESTRUCT*>(lParam)->lpCreateParams));
-    } else if (uMsg == WM_DEVICECHANGE) {
-        auto plugin = reinterpret_cast<FlutterUsbEventPlugin*>(
-            GetWindowLongPtr(hwnd, GWLP_USERDATA));
+  if (uMsg == WM_CREATE) {
+    SetWindowLongPtr(hwnd, GWLP_USERDATA,
+                     reinterpret_cast<LONG_PTR>(
+                         reinterpret_cast<CREATESTRUCT*>(lParam)->lpCreateParams));
+  } else if (uMsg == WM_DEVICECHANGE) {
+    auto plugin = reinterpret_cast<FlutterUsbEventPlugin*>(
+        GetWindowLongPtr(hwnd, GWLP_USERDATA));
 
-        if (plugin && wParam == DBT_DEVICEARRIVAL) {
-            // Device connected
-            std::string deviceName = GetDeviceName(lParam);
-            flutter::EncodableValue args("Connected: " + deviceName);
-            plugin->registrar_->GetMessenger()->Send(
-                "flutter_usb_event", 0, &args);
-        } else if (plugin && wParam == DBT_DEVICEREMOVECOMPLETE) {
-            // Device disconnected
-            std::string deviceName = GetDeviceName(lParam);
-            flutter::EncodableValue args("Disconnected: " + deviceName);
-            plugin->registrar_->GetMessenger()->Send(
-                "flutter_usb_event", 0, &args);
+    if (plugin && wParam == DBT_DEVICEARRIVAL) {
+      // Handle device connected
+      DEV_BROADCAST_HDR* hdr = reinterpret_cast<DEV_BROADCAST_HDR*>(lParam);
+      if (hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+        DEV_BROADCAST_DEVICEINTERFACE* dev_interface =
+            reinterpret_cast<DEV_BROADCAST_DEVICEINTERFACE*>(hdr);
+
+        std::string device_path = ConvertWStringToString(dev_interface->dbcc_name);
+
+        std::cerr << "Device connected with path: " << device_path << std::endl;  // Debug output
+
+        // Check if the device path matches USB devices
+        if (IsUsbDevice(device_path)) {
+            // Return the device path directly
+            plugin->channel_->InvokeMethod("onDeviceConnected",
+                                           std::make_unique<flutter::EncodableValue>(device_path));
         }
+      }
+    } else if (plugin && wParam == DBT_DEVICEREMOVECOMPLETE) {
+      // Handle device disconnected
+      DEV_BROADCAST_HDR* hdr = reinterpret_cast<DEV_BROADCAST_HDR*>(lParam);
+      if (hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+        DEV_BROADCAST_DEVICEINTERFACE* dev_interface =
+            reinterpret_cast<DEV_BROADCAST_DEVICEINTERFACE*>(hdr);
+
+        std::string device_path = ConvertWStringToString(dev_interface->dbcc_name);
+
+        std::cerr << "Device disconnected with path: " << device_path << std::endl;  // Debug output
+
+        // Check if the device path matches USB devices
+        if (IsUsbDevice(device_path)) {
+            // Return the device path directly
+            plugin->channel_->InvokeMethod("onDeviceDisconnected",
+                                           std::make_unique<flutter::EncodableValue>(device_path));
+        }
+      }
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+  }
+  return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
-}  // namespace
-
-void FlutterUsbEventPluginRegisterWithRegistrar(
-    FlutterDesktopPluginRegistrarRef registrar) {
-    FlutterUsbEventPlugin::RegisterWithRegistrar(
-        flutter::PluginRegistrarManager::GetInstance()
-            ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
-}
+}  // namespace flutter_usb_event
