@@ -1,5 +1,7 @@
 # Flutter USB Event
 
+![flutter_usb_event banner](flutter_usb_event_banner.png)
+
 `flutter_usb_event` is a Flutter plugin that allows you to listen to USB device connection and disconnection events on macOS and Windows. This plugin is useful for applications that need to interact with USB devices, such as RFID readers, USB printers, or other types of USB peripherals.
 
 ## Features
